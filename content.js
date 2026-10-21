@@ -116,6 +116,9 @@
   }
 
   function onWheel(event) {
+    // Pages (and iframes in them) can dispatch wheel events to fake a swipe.
+    if (!event.isTrusted) return;
+
     clearTimeout(idleTimer);
     idleTimer = setTimeout(endGesture, GESTURE_GAP_MS);
 

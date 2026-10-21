@@ -327,21 +327,20 @@ async function hasPreviousPage(tabId, { historyLength, entryKey }) {
   return !entryKey || entryKey !== firstEntries.get(tabId);
 }
 
+// Answers content scripts in every frame, cross-origin ones included, so only
+// booleans go back: never other tabs' URLs, containers or ids.
 async function query(tabId, msg) {
-  const debug = { tabId, firstEntryKey: firstEntries.get(tabId) ?? null };
   if (await hasPreviousPage(tabId, msg)) {
-    return { hasPreviousPage: true, willClose: false, ...debug };
+    return { hasPreviousPage: true, willClose: false };
   }
   const [parent, { closeWithoutParent }] = await Promise.all([
     getParent(tabId),
     getSettings(),
   ]);
   return {
+    hasPreviousPage: false,
     hasParent: !!parent,
     willClose: !!parent || closeWithoutParent,
-    parent: parent ? { id: parent.id, url: parent.url, container: parent.cookieStoreId } : null,
-    trackedParentUid: parents.get(tabId) ?? null,
-    ...debug,
   };
 }
 
