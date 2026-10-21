@@ -39,6 +39,10 @@ const openTabs = new Set();
 const uids = new Map(); // tabId -> uid
 const parents = new Map(); // tabId -> parent uid
 const containers = new Map(); // tabId -> cookieStoreId
+// tabId -> Navigation API key of the tab's first history entry, reported by
+// the content script. Tells "back on the first page" apart from "has a
+// previous page" when history.length > 1.
+const firstEntries = new Map();
 // Closed tab uid -> its parent uid, so lookups can walk past closed tabs.
 // Saved to storage.local so it survives restarts too. Capped.
 let closedParents = new Map();
@@ -56,7 +60,12 @@ function getTabValue(tabId, key) {
 }
 
 function mirrorEntry(tabId) {
-  return { uid: uids.get(tabId), parent: parents.get(tabId), container: containers.get(tabId) };
+  return {
+    uid: uids.get(tabId),
+    parent: parents.get(tabId),
+    container: containers.get(tabId),
+    firstEntry: firstEntries.get(tabId),
+  };
 }
 
 function mirrorTab(tabId) {
@@ -137,7 +146,7 @@ function schedulePrune() {
     // created during the query and is left alone.
     const live = new Set(tabs.map((t) => t.id));
     const maxId = Math.max(-1, ...live);
-    for (const map of [openTabs, uids, parents, containers]) {
+    for (const map of [openTabs, uids, parents, containers, firstEntries]) {
       for (const tabId of map.keys()) {
         if (!live.has(tabId) && tabId <= maxId) map.delete(tabId);
       }
@@ -170,6 +179,7 @@ const ready = (async () => {
     if (entry.uid) uids.set(tabId, entry.uid);
     if (entry.parent) parents.set(tabId, entry.parent);
     if (entry.container) containers.set(tabId, entry.container);
+    if (entry.firstEntry) firstEntries.set(tabId, entry.firstEntry);
   }
   tabs.forEach(trackTab);
   // Only tabs we don't know yet (first start, or after a browser restart,
@@ -253,6 +263,7 @@ browser.tabs.onRemoved.addListener(async (tabId, { windowId }) => {
   uids.delete(tabId);
   parents.delete(tabId);
   containers.delete(tabId);
+  firstEntries.delete(tabId);
   schedulePrune();
 });
 
@@ -294,7 +305,33 @@ async function getParent(tabId) {
   return null;
 }
 
-async function query(tabId) {
+async function setFirstEntry(tabId, entryKey) {
+  await ready;
+  if (!openTabs.has(tabId) || typeof entryKey !== "string") return;
+  // The first report wins; a later one comes from a page whose
+  // history.length was briefly wrong.
+  if (firstEntries.has(tabId)) return;
+  firstEntries.set(tabId, entryKey);
+  mirrorTab(tabId);
+}
+
+// Whether the browser has a page to go back to, from what the content script
+// sees. When unsure, say yes: the browser then handles the swipe itself, and
+// we never close a tab that still has a previous page.
+async function hasPreviousPage(tabId, { historyLength, entryKey }) {
+  if (historyLength === 1) {
+    if (entryKey) await setFirstEntry(tabId, entryKey);
+    return false;
+  }
+  await ready;
+  return !entryKey || entryKey !== firstEntries.get(tabId);
+}
+
+async function query(tabId, msg) {
+  const debug = { tabId, firstEntryKey: firstEntries.get(tabId) ?? null };
+  if (await hasPreviousPage(tabId, msg)) {
+    return { hasPreviousPage: true, willClose: false, ...debug };
+  }
   const [parent, { closeWithoutParent }] = await Promise.all([
     getParent(tabId),
     getSettings(),
@@ -304,13 +341,15 @@ async function query(tabId) {
     willClose: !!parent || closeWithoutParent,
     parent: parent ? { id: parent.id, url: parent.url, container: parent.cookieStoreId } : null,
     trackedParentUid: parents.get(tabId) ?? null,
+    ...debug,
   };
 }
 
-async function closeToParent(tabId) {
+async function closeToParent(tabId, msg) {
   if (closing.has(tabId)) return;
   closing.add(tabId);
   try {
+    if (await hasPreviousPage(tabId, msg)) return;
     const [parent, { closeWithoutParent }] = await Promise.all([
       getParent(tabId),
       getSettings(),
@@ -338,10 +377,13 @@ browser.runtime.onMessage.addListener((msg, sender) => {
   const tabId = sender.tab?.id;
   if (tabId == null) return undefined;
   switch (msg?.type) {
+    case "first-entry":
+      if (sender.frameId === 0) return setFirstEntry(tabId, msg.entryKey);
+      break;
     case "query":
-      return query(tabId);
+      return query(tabId, msg);
     case "swipe-back":
-      return closeToParent(tabId);
+      return closeToParent(tabId, msg);
   }
   return undefined;
 });

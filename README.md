@@ -17,8 +17,13 @@ extension does nothing.
   - the movement is mostly horizontal and toward "back" (negative `deltaX`),
   - nothing under the pointer can scroll further left,
   - the page didn't call `preventDefault()`,
-  - the tab has no previous page (`history.length`, plus the Navigation API's
-    `canGoBack` when Firefox has it).
+  - the tab has no previous page. That is the case when `history.length` is
+    1, or when the tab is back on its first page after going back. For the
+    second case, the content script reports the Navigation API key of the
+    tab's first page, and the swipe compares it with the current page's key.
+    It doesn't use `navigation.canGoBack`, because that only counts pages
+    from the same site. If the extension can't tell, it does nothing and the
+    browser handles the swipe.
 - `background.js` keeps track of each tab's parent, starting from
   `tabs.Tab.openerTabId`, which Firefox sets no matter which container a tab
   is in. It also handles these cases:

@@ -2,10 +2,10 @@
 
 // On macOS, a two-finger horizontal trackpad swipe reaches the page as a
 // stream of pixel-mode wheel events. Swiping the fingers to the right
-// ("back") produces negative deltaX. Firefox only turns the gesture into a
-// history navigation when there is a page to go back to, so when there
-// isn't, we recognise the same gesture here and ask the background script
-// to close the tab and return to its parent.
+// ("back") produces negative deltaX. The browser turns the gesture into a
+// history navigation when there is a page to go back to; when there isn't,
+// we recognise the same gesture here and ask the background script to close
+// the tab and return to its parent.
 
 (() => {
   if (window.__swipeBackToParent) return;
@@ -46,18 +46,42 @@
     return delta;
   }
 
-  function hasPreviousPage() {
-    if (history.length > 1) {
-      // The Navigation API (when available) can tell "at the first entry
-      // with forward entries" apart from "has a back entry".
-      const nav = window.top === window ? window.navigation : null;
-      if (nav && typeof nav.canGoBack === "boolean" && !nav.canGoBack) {
-        // Iframe navigations also count as back history for Firefox.
-        return document.getElementsByTagName("iframe").length > 0;
-      }
-      return true;
-    }
-    return false;
+  // Whether there is a page to go back to is decided with the background:
+  // - history.length counts the tab's whole session history, including other
+  //   sites, so 1 means there is no previous page.
+  // - With more entries we may still be on the first one, after going back.
+  //   history.length can't tell, and navigation.canGoBack only sees
+  //   same-origin entries (it is false right after following a link to
+  //   another site). So the top frame reports the Navigation API key of the
+  //   tab's first entry, which stays the same when you come back to it, and
+  //   the background compares it with the current entry's key.
+  const isTop = window.top === window;
+
+  function historyInfo() {
+    let entryKey = null;
+    try {
+      if (isTop) entryKey = window.navigation?.currentEntry?.key ?? null;
+    } catch {}
+    return { historyLength: history.length, entryKey };
+  }
+
+  // Only real pages count: a new tab's initial about:blank is replaced by the
+  // page it opens. history.length and navigation.currentEntry aren't
+  // reliable while the page is still loading, so check once it has loaded.
+  // The background also records the key from swipes on a one-entry tab, and
+  // keeps only the first key it gets per tab.
+  if (isTop && location.protocol !== "about:") {
+    window.addEventListener(
+      "load",
+      () => {
+        const info = historyInfo();
+        log("first page check on load", info);
+        if (info.historyLength === 1 && info.entryKey) {
+          browser.runtime.sendMessage({ type: "first-entry", entryKey: info.entryKey }).catch(() => {});
+        }
+      },
+      { once: true }
+    );
   }
 
   function canScrollLeft(el) {
@@ -99,20 +123,17 @@
       active = true;
       // Decide once, at the start, whether this gesture can be ours.
       const modifier = event.ctrlKey || event.altKey || event.metaKey || event.shiftKey; // ctrl = pinch-zoom
-      const previousPage = hasPreviousPage();
       const scrollsLeft = targetScrollsLeft(event);
-      eligible = !modifier && !previousPage && !scrollsLeft;
+      eligible = !modifier && !scrollsLeft;
       log("gesture start", {
         eligible,
         modifier,
-        previousPage,
         scrollsLeft,
-        historyLength: history.length,
-        canGoBack: window.navigation?.canGoBack,
+        ...historyInfo(),
         deltaMode: event.deltaMode,
       });
       if (eligible) {
-        browser.runtime.sendMessage({ type: "query" }).then(
+        browser.runtime.sendMessage({ type: "query", ...historyInfo() }).then(
           (res) => {
             log("background says", res);
             if (active && eligible) willClose = !!res?.willClose;
@@ -148,11 +169,11 @@
     const progress = Math.min(1, -accX / threshold);
     if (willClose && settings.showIndicator) indicator.show(progress);
 
-    if (progress >= 1 && willClose !== false) {
+    if (progress >= 1 && willClose) {
       log("threshold reached; asking background to close tab");
       fired = true;
       indicator.hide();
-      browser.runtime.sendMessage({ type: "swipe-back" }).catch(() => {});
+      browser.runtime.sendMessage({ type: "swipe-back", ...historyInfo() }).catch(() => {});
     }
   }
 
