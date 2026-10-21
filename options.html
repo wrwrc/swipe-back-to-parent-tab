@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 14px system-ui, sans-serif; padding: 8px 12px; }
+    label { display: block; margin: 12px 0; }
+    input[type=range] { width: 220px; vertical-align: middle; }
+    .hint { color: GrayText; font-size: 12px; margin-left: 24px; }
+  </style>
+</head>
+<body>
+  <label>
+    Swipe distance:
+    <input type="range" id="threshold" min="50" max="500" step="10">
+    <output id="thresholdValue"></output> px
+  </label>
+  <label>
+    <input type="checkbox" id="showIndicator">
+    Show indicator while swiping
+  </label>
+  <label>
+    <input type="checkbox" id="closeWithoutParent">
+    Also close tabs that have no parent tab
+  </label>
+  <div class="hint">When off, swiping on a tab with no previous page and no opener does nothing.</div>
+  <label>
+    <input type="checkbox" id="debug">
+    Debug logging
+  </label>
+  <div class="hint">Logs each swipe's decisions to the page's Web Console (⌥⌘K).</div>
+  <script src="options.js"></script>
+</body>
+</html>
