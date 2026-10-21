@@ -39,6 +39,10 @@ extension does nothing.
   tab gets its own stable ID, and the parent is stored by that ID. The list of
   closed tabs' parents, used for the grandparent fallback, is kept in
   `storage.local`. It keeps the 2,000 most recent entries.
+- The extension uses Manifest V3. Its background script is an event page,
+  which the browser unloads when it has been idle for a while. To bridge
+  that, what it knows about each open tab is copied to `storage.session`, so
+  a tab that closes while the script is unloaded still records its parent.
 
 ## Install
 
@@ -54,6 +58,14 @@ unlisted or self-distributed), or use Firefox Developer Edition/Nightly with
 
 Developing: run `npx web-ext run` for live reload, `npx web-ext lint` to lint,
 and `npx web-ext build -a dist` to build the zip.
+
+## Site access
+
+Manifest V3 lets you turn off an extension's access to websites, for example
+from the extension's **Permissions** tab in `about:addons`. Without that
+access, swiping does nothing. If access is missing when the extension is
+installed or updated, the options page opens with an **Allow** button. The
+options page shows that button whenever access is missing.
 
 ## Options
 

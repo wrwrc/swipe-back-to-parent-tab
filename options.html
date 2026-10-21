@@ -7,9 +7,14 @@
     label { display: block; margin: 12px 0; }
     input[type=range] { width: 220px; vertical-align: middle; }
     .hint { color: GrayText; font-size: 12px; margin-left: 24px; }
+    #access { padding: 8px 12px; border: 1px solid #d70022; border-radius: 4px; }
   </style>
 </head>
 <body>
+  <div id="access" hidden>
+    Swiping needs access to all websites, which is currently not granted.
+    <button id="grant">Allow</button>
+  </div>
   <label>
     Swipe distance:
     <input type="range" id="threshold" min="50" max="500" step="10">

@@ -8,6 +8,20 @@ const showIndicator = document.getElementById("showIndicator");
 const closeWithoutParent = document.getElementById("closeWithoutParent");
 const debug = document.getElementById("debug");
 
+const ALL_SITES = { origins: ["<all_urls>"] };
+const access = document.getElementById("access");
+
+async function updateAccess() {
+  access.hidden = await browser.permissions.contains(ALL_SITES);
+}
+updateAccess();
+browser.permissions.onAdded.addListener(updateAccess);
+browser.permissions.onRemoved.addListener(updateAccess);
+document.getElementById("grant").addEventListener("click", () => {
+  // Must be called straight from the click to count as a user action.
+  browser.permissions.request(ALL_SITES).then(updateAccess);
+});
+
 browser.storage.local.get(DEFAULTS).then((s) => {
   threshold.value = s.threshold;
   thresholdValue.textContent = s.threshold;

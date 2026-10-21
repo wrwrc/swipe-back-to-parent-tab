@@ -24,6 +24,13 @@ const PRUNE_DELAY_MS = 10000;
 const UID_KEY = "uid";
 const PARENT_KEY = "parent";
 
+// The background is an event page that the browser unloads when idle, so
+// what we know about each open tab is mirrored to storage.session as
+// "tab:<id>" entries. Without that, a tab closed while we're unloaded
+// couldn't record its parent when onRemoved wakes us up.
+const TAB_PREFIX = "tab:";
+const RECENT_KEY = "recentlyRemoved";
+
 // Open tab IDs. The caches below only take entries for these, since an async
 // handler can finish after onRemoved has already cleaned its tab up.
 const openTabs = new Set();
@@ -48,10 +55,20 @@ function getTabValue(tabId, key) {
   return browser.sessions.getTabValue(tabId, key).catch(() => undefined);
 }
 
+function mirrorEntry(tabId) {
+  return { uid: uids.get(tabId), parent: parents.get(tabId), container: containers.get(tabId) };
+}
+
+function mirrorTab(tabId) {
+  if (!openTabs.has(tabId)) return;
+  browser.storage.session.set({ [TAB_PREFIX + tabId]: mirrorEntry(tabId) }).catch(() => {});
+}
+
 function setParent(tabId, parentUid) {
   if (!openTabs.has(tabId) || !parentUid || parentUid === uids.get(tabId)) return;
   parents.set(tabId, parentUid);
   browser.sessions.setTabValue(tabId, PARENT_KEY, parentUid).catch(() => {});
+  mirrorTab(tabId);
 }
 
 // Reads a tab's uid and parent, giving it a uid if it has none yet.
@@ -125,28 +142,59 @@ function schedulePrune() {
         if (!live.has(tabId) && tabId <= maxId) map.delete(tabId);
       }
     }
+    const mirror = await browser.storage.session.get(null);
+    const stale = Object.keys(mirror).filter((key) => {
+      if (!key.startsWith(TAB_PREFIX)) return false;
+      const tabId = Number(key.slice(TAB_PREFIX.length));
+      return !live.has(tabId) && tabId <= maxId;
+    });
+    await browser.storage.session.remove(stale);
+    await browser.storage.session.set({ [RECENT_KEY]: recentlyRemoved });
   }, PRUNE_DELAY_MS);
 }
 
 const ready = (async () => {
-  const { closedParents: saved } = await browser.storage.local.get("closedParents");
+  const [{ closedParents: saved }, mirror, tabs] = await Promise.all([
+    browser.storage.local.get("closedParents"),
+    browser.storage.session.get(null),
+    browser.tabs.query({}),
+  ]);
   closedParents = new Map(saved || []);
-  const tabs = await browser.tabs.query({});
+  recentlyRemoved = mirror[RECENT_KEY] || [];
+  // Woken up again in the same browser session: pick up where we left off.
+  // This includes tabs closed while we were unloaded; their onRemoved
+  // events are on the way.
+  for (const [key, entry] of Object.entries(mirror)) {
+    if (!key.startsWith(TAB_PREFIX)) continue;
+    const tabId = Number(key.slice(TAB_PREFIX.length));
+    if (entry.uid) uids.set(tabId, entry.uid);
+    if (entry.parent) parents.set(tabId, entry.parent);
+    if (entry.container) containers.set(tabId, entry.container);
+  }
   tabs.forEach(trackTab);
-  await Promise.all(tabs.map(loadTab));
-  schedulePrune();
+  // Only tabs we don't know yet (first start, or after a browser restart,
+  // which clears storage.session) need reading from their session values.
+  const unknown = tabs.filter((tab) => !uids.has(tab.id));
+  await Promise.all(unknown.map(loadTab));
   // Tabs from before we tracked them: use the browser's opener.
-  for (const tab of tabs) {
+  for (const tab of unknown) {
     if (!parents.has(tab.id) && tab.openerTabId != null) {
       setParent(tab.id, uids.get(tab.openerTabId));
     }
   }
+  if (unknown.length) {
+    const entries = {};
+    for (const tab of unknown) entries[TAB_PREFIX + tab.id] = mirrorEntry(tab.id);
+    await browser.storage.session.set(entries);
+  }
+  schedulePrune();
 })().catch((err) => console.error("swipe-back-to-parent:", err));
 
 browser.tabs.onCreated.addListener(async (tab) => {
   trackTab(tab);
   await ready;
   await loadTab(tab);
+  mirrorTab(tab.id);
   // A restored tab already knows its parent.
   if (parents.has(tab.id)) return;
 
@@ -182,12 +230,16 @@ browser.tabs.onCreated.addListener(async (tab) => {
   if (removed) setParent(tab.id, removed.uid);
 });
 
-browser.tabs.onRemoved.addListener((tabId, { windowId }) => {
+browser.tabs.onRemoved.addListener(async (tabId, { windowId }) => {
+  const now = Date.now();
+  openTabs.delete(tabId);
+  await ready;
   const uid = uids.get(tabId);
   const parent = parents.get(tabId);
-  const now = Date.now();
   recentlyRemoved = recentlyRemoved.filter((r) => now - r.time < REOPEN_WINDOW_MS);
   recentlyRemoved.push({ tabId, uid, windowId, cookieStoreId: containers.get(tabId), time: now });
+  browser.storage.session.remove(TAB_PREFIX + tabId).catch(() => {});
+  browser.storage.session.set({ [RECENT_KEY]: recentlyRemoved }).catch(() => {});
 
   if (uid && parent) {
     closedParents.delete(uid);
@@ -202,6 +254,14 @@ browser.tabs.onRemoved.addListener((tabId, { windowId }) => {
   parents.delete(tabId);
   containers.delete(tabId);
   schedulePrune();
+});
+
+// MV3 lets people take away the access to websites the content script needs.
+// Ask for it again through the options page.
+browser.runtime.onInstalled.addListener(async () => {
+  if (!(await browser.permissions.contains({ origins: ["<all_urls>"] }))) {
+    browser.runtime.openOptionsPage();
+  }
 });
 
 async function getSettings() {
