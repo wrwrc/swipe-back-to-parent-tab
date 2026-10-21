@@ -64,6 +64,13 @@ unlisted or self-distributed), or use Firefox Developer Edition/Nightly with
 Developing: run `npx web-ext run` for live reload, `npx web-ext lint` to lint,
 and `npx web-ext build -a dist` to build the zip.
 
+Testing: `node --test` (Node 20 or later) runs `test/background.test.js`,
+which loads `background.js` against a mock of the `browser.*` APIs. It covers
+container reopens, browser restarts, extension reloads, the event page being
+unloaded, first-page detection and cache cleanup. It takes about 12 seconds
+because it waits for the real cleanup delay. The swipe itself (`content.js`)
+can only be tested by hand on a Mac trackpad.
+
 Publishing to AMO: `amo-metadata.json` holds the listing details and the notes
 for reviewers. Bump `version` in `manifest.json`, then run:
 
