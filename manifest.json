@@ -5,7 +5,7 @@
   "description": "Two-finger swipe right (back) on a tab with no previous page closes it and returns to the tab that opened it. Works with container and non-container tabs.",
   "browser_specific_settings": {
     "gecko": {
-      "id": "swipe-back-to-parent@local",
+      "id": "swipe-back-to-parent-tab@wrwrc",
       "strict_min_version": "140.0",
       "data_collection_permissions": {
         "required": [

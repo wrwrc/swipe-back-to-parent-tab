@@ -64,6 +64,17 @@ unlisted or self-distributed), or use Firefox Developer Edition/Nightly with
 Developing: run `npx web-ext run` for live reload, `npx web-ext lint` to lint,
 and `npx web-ext build -a dist` to build the zip.
 
+Publishing to AMO: `amo-metadata.json` holds the listing details and the notes
+for reviewers. Bump `version` in `manifest.json`, then run:
+
+```sh
+npx web-ext sign --channel=listed --amo-metadata=amo-metadata.json \
+  --api-key=$AMO_JWT_ISSUER --api-secret=$AMO_JWT_SECRET
+```
+
+Use `--channel=unlisted` to get a signed `.xpi` without a public listing.
+`web-ext-config.mjs` keeps the repo-only files out of the package.
+
 ## Site access
 
 Manifest V3 lets you turn off an extension's access to websites, for example

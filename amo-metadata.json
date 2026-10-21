@@ -1,0 +1,16 @@
+{
+  "name": { "en-US": "Swipe Back to Parent Tab" },
+  "summary": {
+    "en-US": "On macOS, a two-finger swipe right on a tab with no previous page closes it and returns to the tab that opened it. Works with container and non-container tabs."
+  },
+  "description": {
+    "en-US": "Swiping right with two fingers on a Mac trackpad normally goes back a page. When a tab has no previous page (for example, a link you opened in a new tab), this add-on makes that swipe close the tab and switch to the tab that opened it.\n\n- Works with Firefox Multi-Account Containers and with tabs that Facebook Container or Google Container reopen in another container.\n- If the tab that opened it is gone, it goes to the next tab up the chain.\n- When the tab has a previous page, the browser goes back as usual.\n- Parent links survive browser restarts.\n\nRequires a trackpad on macOS. Doesn't work on about: pages, addons.mozilla.org or other extensions' pages, where Firefox doesn't let add-ons run."
+  },
+  "categories": { "firefox": ["tabs"] },
+  "homepage": { "en-US": "https://github.com/wrwrc/swipe-back-to-parent-tab" },
+  "version": {
+    "license": "MIT",
+    "compatibility": ["firefox"],
+    "approval_notes": "No build step and no minified code: the uploaded files are the source (https://github.com/wrwrc/swipe-back-to-parent-tab).\n\nPermissions:\n- <all_urls>: only for the content script, which watches horizontal trackpad scroll (wheel) events to recognise the swipe gesture.\n- sessions: stores each tab's parent link as a session tab value so it survives restarts.\n- storage: settings, plus a capped list of closed tabs' parents.\n\nNo network requests are made and no data leaves the device.\n\nTo test on macOS: open a link in a new tab, then swipe right with two fingers on the trackpad. The tab closes and its parent tab is selected."
+  }
+}
