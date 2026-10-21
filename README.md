@@ -32,8 +32,13 @@ extension does nothing.
   - **Parent closed.** The tab falls back to its grandparent.
 
   When you swipe, the script switches to the parent first and then closes the
-  tab. Parents worked out this way are kept only in memory. They are lost
-  when the extension reloads, and tabs then fall back to `openerTabId`.
+  tab.
+- Parent links are saved with each tab using `browser.sessions.setTabValue`,
+  so they survive extension reloads and updates, browser restarts, and closed
+  tabs being restored. Because tab IDs change when the browser restarts, each
+  tab gets its own stable ID, and the parent is stored by that ID. The list of
+  closed tabs' parents, used for the grandparent fallback, is kept in
+  `storage.local`. It keeps the 2,000 most recent entries.
 
 ## Install
 

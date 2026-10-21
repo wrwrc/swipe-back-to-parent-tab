@@ -6,46 +6,128 @@ const DEFAULTS = { closeWithoutParent: false };
 // extension created to replace it.
 const REOPEN_WINDOW_MS = 3000;
 const NEW_TAB_URLS = new Set(["about:newtab", "about:home", "about:privatebrowsing"]);
+const CLOSED_PARENTS_MAX = 2000;
+const CLOSED_PARENTS_SAVE_DELAY_MS = 1000;
 
-// tabId -> parent tabId. Seeded from openerTabId, but tracked here because
-// openerTabId is not enough on its own:
+// Tab IDs change when the browser restarts, so each tab gets a uid stored as
+// a session tab value. The browser keeps those across extension reloads,
+// browser restarts and restored closed tabs. A tab's parent is stored the
+// same way, as the parent's uid.
+//
+// We track parents ourselves because openerTabId is not enough on its own:
 // - Facebook Container, Google Container and similar extensions "move" a tab
 //   into another container by creating a new tab (without openerTabId) and
 //   closing the original.
 // - When the parent closes, Firefox drops openerTabId; we fall back to the
 //   parent's parent instead.
-const parents = new Map();
-// Closed tabId -> its parent, so lookups can walk past closed tabs. Capped.
-const closedParents = new Map();
-const CLOSED_PARENTS_MAX = 2000;
-// tabId -> cookieStoreId, kept synchronously so it's still known in onRemoved.
-const containers = new Map();
-// Tabs closed in the last REOPEN_WINDOW_MS: { id, windowId, cookieStoreId, parent, time }.
+const UID_KEY = "uid";
+const PARENT_KEY = "parent";
+
+// Caches of the session values, kept synchronously so they're still known in
+// onRemoved.
+const uids = new Map(); // tabId -> uid
+const parents = new Map(); // tabId -> parent uid
+const containers = new Map(); // tabId -> cookieStoreId
+// Closed tab uid -> its parent uid, so lookups can walk past closed tabs.
+// Saved to storage.local so it survives restarts too. Capped.
+let closedParents = new Map();
+let saveTimer = 0;
+// Tabs closed in the last REOPEN_WINDOW_MS: { tabId, uid, windowId, cookieStoreId, time }.
 let recentlyRemoved = [];
 
 // Tabs we've already started closing, so a burst of swipe messages
 // (e.g. from several frames) only acts once.
 const closing = new Set();
 
-function remember(tab) {
+function getTabValue(tabId, key) {
+  return browser.sessions.getTabValue(tabId, key).catch(() => undefined);
+}
+
+function setParent(tabId, parentUid) {
+  if (!parentUid || parentUid === uids.get(tabId)) return;
+  parents.set(tabId, parentUid);
+  browser.sessions.setTabValue(tabId, PARENT_KEY, parentUid).catch(() => {});
+}
+
+// Reads a tab's uid and parent, giving it a uid if it has none yet.
+async function loadTab(tab) {
   containers.set(tab.id, tab.cookieStoreId);
-  if (tab.openerTabId != null && tab.openerTabId !== tab.id) {
-    parents.set(tab.id, tab.openerTabId);
+  let uid = await getTabValue(tab.id, UID_KEY);
+  if (!uid) {
+    uid = crypto.randomUUID();
+    await browser.sessions.setTabValue(tab.id, UID_KEY, uid).catch(() => {});
+  }
+  uids.set(tab.id, uid);
+  const parent = await getTabValue(tab.id, PARENT_KEY);
+  if (parent) parents.set(tab.id, parent);
+  return uid;
+}
+
+async function uidOf(tabId) {
+  if (uids.has(tabId)) return uids.get(tabId);
+  // Closed a moment ago, before we got here.
+  const removed = recentlyRemoved.find((r) => r.tabId === tabId);
+  if (removed) return removed.uid;
+  try {
+    return await loadTab(await browser.tabs.get(tabId));
+  } catch {
+    return undefined;
   }
 }
 
-browser.tabs.query({}).then((tabs) => tabs.forEach(remember));
+async function findTabByUid(uid) {
+  for (const [tabId, u] of uids) if (u === uid) return tabId;
+  // The browser may have restored a tab's values after we cached them.
+  const tabs = await browser.tabs.query({});
+  await Promise.all(
+    tabs.map(async (tab) => {
+      const u = await getTabValue(tab.id, UID_KEY);
+      if (u) uids.set(tab.id, u);
+    })
+  );
+  for (const [tabId, u] of uids) if (u === uid) return tabId;
+  return null;
+}
+
+function saveClosedParents() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    browser.storage.local.set({ closedParents: [...closedParents] });
+  }, CLOSED_PARENTS_SAVE_DELAY_MS);
+}
+
+const ready = (async () => {
+  const { closedParents: saved } = await browser.storage.local.get("closedParents");
+  closedParents = new Map(saved || []);
+  const tabs = await browser.tabs.query({});
+  await Promise.all(tabs.map(loadTab));
+  // Tabs from before we tracked them: use the browser's opener.
+  for (const tab of tabs) {
+    if (!parents.has(tab.id) && tab.openerTabId != null) {
+      setParent(tab.id, uids.get(tab.openerTabId));
+    }
+  }
+})().catch((err) => console.error("swipe-back-to-parent:", err));
 
 browser.tabs.onCreated.addListener(async (tab) => {
-  remember(tab);
-  if (tab.openerTabId != null || NEW_TAB_URLS.has(tab.url)) return;
+  containers.set(tab.id, tab.cookieStoreId);
+  await ready;
+  await loadTab(tab);
+  // A restored tab already knows its parent.
+  if (parents.has(tab.id)) return;
+
+  if (tab.openerTabId != null) {
+    setParent(tab.id, await uidOf(tab.openerTabId));
+    return;
+  }
+  if (NEW_TAB_URLS.has(tab.url)) return;
 
   // No opener: this may be a container extension reopening a tab. Those put
   // the new tab right next to the original, in a different container.
   const now = Date.now();
   const siblings = await browser.tabs.query({ windowId: tab.windowId });
   const pos = siblings.findIndex((t) => t.id === tab.id);
-  if (pos === -1 || parents.has(tab.id)) return;
+  if (pos === -1) return;
   const original = [siblings[pos - 1], siblings[pos + 1]].find(
     (t) => t && t.cookieStoreId !== tab.cookieStoreId
   );
@@ -53,7 +135,7 @@ browser.tabs.onCreated.addListener(async (tab) => {
     // If the original closes (now or already), getParent() walks on to its
     // parent. If it stays open (Google Container keeps the search page), it
     // is the parent.
-    parents.set(tab.id, original.id);
+    setParent(tab.id, await uidOf(original.id));
     return;
   }
   // The original may already be gone by the time we got here.
@@ -63,19 +145,25 @@ browser.tabs.onCreated.addListener(async (tab) => {
       r.cookieStoreId !== tab.cookieStoreId &&
       now - r.time < REOPEN_WINDOW_MS
   );
-  if (removed?.parent != null) parents.set(tab.id, removed.parent);
+  if (removed) setParent(tab.id, removed.uid);
 });
 
 browser.tabs.onRemoved.addListener((tabId, { windowId }) => {
+  const uid = uids.get(tabId);
   const parent = parents.get(tabId);
   const now = Date.now();
   recentlyRemoved = recentlyRemoved.filter((r) => now - r.time < REOPEN_WINDOW_MS);
-  recentlyRemoved.push({ id: tabId, windowId, cookieStoreId: containers.get(tabId), parent, time: now });
+  recentlyRemoved.push({ tabId, uid, windowId, cookieStoreId: containers.get(tabId), time: now });
 
-  closedParents.set(tabId, parent);
-  if (closedParents.size > CLOSED_PARENTS_MAX) {
-    closedParents.delete(closedParents.keys().next().value);
+  if (uid && parent) {
+    closedParents.delete(uid);
+    closedParents.set(uid, parent);
+    if (closedParents.size > CLOSED_PARENTS_MAX) {
+      closedParents.delete(closedParents.keys().next().value);
+    }
+    saveClosedParents();
   }
+  uids.delete(tabId);
   parents.delete(tabId);
   containers.delete(tabId);
 });
@@ -86,22 +174,26 @@ async function getSettings() {
 
 // The nearest open ancestor: if the parent was closed, its parent, and so on.
 async function getParent(tabId) {
-  let parentId = parents.get(tabId);
-  if (parentId == null) {
+  await ready;
+  let parentUid = (await getTabValue(tabId, PARENT_KEY)) || parents.get(tabId);
+  if (!parentUid) {
     try {
-      parentId = (await browser.tabs.get(tabId)).openerTabId;
+      const { openerTabId } = await browser.tabs.get(tabId);
+      return openerTabId == null ? null : await browser.tabs.get(openerTabId);
     } catch {
       return null;
     }
   }
-  const seen = new Set([tabId]);
-  while (parentId != null && !seen.has(parentId)) {
-    seen.add(parentId);
-    try {
-      return await browser.tabs.get(parentId);
-    } catch {
-      parentId = closedParents.get(parentId);
+  const seen = new Set();
+  while (parentUid && !seen.has(parentUid)) {
+    seen.add(parentUid);
+    const parentId = await findTabByUid(parentUid);
+    if (parentId != null && parentId !== tabId) {
+      try {
+        return await browser.tabs.get(parentId);
+      } catch {}
     }
+    parentUid = closedParents.get(parentUid);
   }
   return null;
 }
@@ -115,7 +207,7 @@ async function query(tabId) {
     hasParent: !!parent,
     willClose: !!parent || closeWithoutParent,
     parent: parent ? { id: parent.id, url: parent.url, container: parent.cookieStoreId } : null,
-    trackedParentId: parents.get(tabId) ?? null,
+    trackedParentUid: parents.get(tabId) ?? null,
   };
 }
 
