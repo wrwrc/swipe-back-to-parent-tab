@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Swipe Back to Parent Tab",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Two-finger swipe right (back) on a tab with no previous page closes it and returns to the tab that opened it. Works with container and non-container tabs.",
   "browser_specific_settings": {
     "gecko": {
