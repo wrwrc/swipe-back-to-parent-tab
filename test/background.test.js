@@ -17,7 +17,7 @@ const src = fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8")
 let nextId = 1;
 
 function makeBrowser(tabs = [], store = {}, session = {}) {
-  const listeners = { created: [], removed: [], message: [], installed: [] };
+  const listeners = { created: [], removed: [], activated: [], message: [], installed: [] };
   const event = (kind) => ({ addListener: (f) => listeners[kind].push(f) });
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const snap = (t) => {
@@ -59,11 +59,15 @@ function makeBrowser(tabs = [], store = {}, session = {}) {
     tabs: {
       onCreated: event("created"),
       onRemoved: event("removed"),
+      onActivated: event("activated"),
       query: async (q) =>
         tabs.filter((t) => q.windowId == null || t.windowId === q.windowId).map(snap),
       get: async (id) => snap(find(id)),
       update: async (id, p) => {
-        if (p.active) tabs.forEach((t) => (t.active = t.id === id));
+        if (p.active) {
+          tabs.forEach((t) => (t.active = t.id === id));
+          listeners.activated.forEach((f) => f({ tabId: id, windowId: find(id).windowId }));
+        }
       },
       remove: async (id) => {
         const t = find(id);
@@ -298,6 +302,48 @@ test("first page detection", async (t) => {
   });
   await t.test("key learned from one-entry swipe: back on page 1 closes", async () => {
     assert.equal((await query2("q0")).willClose, true);
+  });
+});
+
+test("the rest of a swipe doesn't close the parent too", async (t) => {
+  const b = await start(makeBrowser());
+  // The search tab has a parent of its own and is on its first page, so a
+  // deliberate swipe on it does close it.
+  const A = b._create({ url: "https://a.com" });
+  await tick();
+  const G = b._create({ url: "https://google.com/search", openerTabId: A.id, active: true });
+  await tick();
+  await b._send(G.id, { type: "first-entry", entryKey: "g0" });
+  const queryG = () => b._send(G.id, { type: "query", historyLength: 1, entryKey: "g0" });
+
+  const R = b._create({ url: "https://result.com", openerTabId: G.id });
+  await tick();
+  await b.tabs.update(R.id, { active: true });
+  await tick(1100);
+
+  await b._send(R.id, { type: "swipe-back" });
+  await t.test("swipe closes the result and activates the search tab", () => {
+    assert.ok(!b._tabs.some((tab) => tab.id === R.id));
+    assert.equal(b._tabs.find((tab) => tab.active)?.id, G.id);
+  });
+  await t.test("wheel events arriving right after are not a new swipe", async () => {
+    assert.equal((await queryG()).willClose, false);
+  });
+
+  await t.test("a later, deliberate swipe closes it", async () => {
+    await tick(1100);
+    assert.equal((await queryG()).willClose, true);
+  });
+
+  // Zen closes a tab with an owner itself, without asking us.
+  const R2 = b._create({ url: "https://result2.com", openerTabId: G.id });
+  await tick();
+  await b.tabs.update(R2.id, { active: true });
+  await tick(1100);
+  await b.tabs.update(G.id, { active: true });
+  await b.tabs.remove(R2.id);
+  await t.test("same when the browser closed the tab itself", async () => {
+    assert.equal((await queryG()).willClose, false);
   });
 });
 

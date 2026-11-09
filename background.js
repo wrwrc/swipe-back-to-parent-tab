@@ -9,6 +9,12 @@ const NEW_TAB_URLS = new Set(["about:newtab", "about:home", "about:privatebrowsi
 const CLOSED_PARENTS_MAX = 2000;
 const CLOSED_PARENTS_SAVE_DELAY_MS = 1000;
 const PRUNE_DELAY_MS = 10000;
+// A swipe that closes a tab doesn't stop there: the fingers keep moving and
+// momentum keeps scrolling, and all of that now lands on the tab we switched
+// to. A gesture starting this soon after a tab became active is the tail of
+// the previous one. Only the start has to fall inside this window, since the
+// content script decides once per gesture.
+const SWIPE_CARRYOVER_MS = 1000;
 
 // Tab IDs change when the browser restarts, so each tab gets a uid stored as
 // a session tab value. The browser keeps those across extension reloads,
@@ -54,6 +60,11 @@ let recentlyRemoved = [];
 // Tabs we've already started closing, so a burst of swipe messages
 // (e.g. from several frames) only acts once.
 const closing = new Set();
+
+// The tab that became active last, and when. Listening for this rather than
+// noting our own closes also covers Zen, which closes a tab that still has an
+// owner by itself.
+let lastActivated = { tabId: null, time: 0 };
 
 function getTabValue(tabId, key) {
   return browser.sessions.getTabValue(tabId, key).catch(() => undefined);
@@ -267,6 +278,10 @@ browser.tabs.onRemoved.addListener(async (tabId, { windowId }) => {
   schedulePrune();
 });
 
+browser.tabs.onActivated.addListener(({ tabId }) => {
+  lastActivated = { tabId, time: Date.now() };
+});
+
 // MV3 lets people take away the access to websites the content script needs.
 // Ask for it again through the options page.
 browser.runtime.onInstalled.addListener(async () => {
@@ -327,6 +342,10 @@ async function hasPreviousPage(tabId, { historyLength, entryKey }) {
   return !entryKey || entryKey !== firstEntries.get(tabId);
 }
 
+function isSwipeCarryover(tabId) {
+  return lastActivated.tabId === tabId && Date.now() - lastActivated.time < SWIPE_CARRYOVER_MS;
+}
+
 // Answers content scripts in every frame, cross-origin ones included, so only
 // booleans go back: never other tabs' URLs, containers or ids.
 async function query(tabId, msg) {
@@ -340,7 +359,7 @@ async function query(tabId, msg) {
   return {
     hasPreviousPage: false,
     hasParent: !!parent,
-    willClose: !!parent || closeWithoutParent,
+    willClose: (!!parent || closeWithoutParent) && !isSwipeCarryover(tabId),
   };
 }
 
